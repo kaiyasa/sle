@@ -1,0 +1,7 @@
+#!/bin/sh
+
+for name in "$HOME"/.env.d/*; do
+    if [ -f "$name" -a -x "$name" ]; then
+        . "$name" || "sourced returned code: $?"
+    fi
+done
