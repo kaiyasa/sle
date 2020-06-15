@@ -1,0 +1,252 @@
+# #!/bin/bash 
+# begin env loading routines
+
+_lenv_undo=(':')
+
+function lenv.undo.cmd.var() {
+    local name=$1 value=$2
+
+    export $name="$value"
+    _lenv_undo+=("unset $name")
+}
+
+function lenv.undo.path_prepend() {
+    local name=$1 path=$2
+    export $name="$path:${!name}"
+
+    _lenv_undo+=("lenv.undo.path_remove $name \"$path\"")
+}
+
+function lenv.undo.path_remove() {
+    local name=$1 path=$2
+    local -a paths
+    local idx
+
+    IFS=':' read -a paths <<<"${!name}"
+    for idx in ${!paths[@]}; do
+        if [[ ${paths[$idx]} =~ "$path" ]]; then
+            unset paths[$idx]
+        fi
+    done
+    export $name="$(IFS=':' ; echo "${paths[*]}")"
+}
+
+function lenv.undo.env_capture() {
+    cat - <<EOF
+function undo_env_$1() {
+    $(IFS=';' ; echo "${_lenv_undo[*]}") ;
+}
+EOF
+}
+
+function lenv.undo.env_complete() {
+    local name=$1
+    eval $(lenv.undo.env_capture $name)
+    _lenv_undo=(':')
+}
+
+function lenv.cmd.undo() {
+    if [ $# -eq 0 ]; then
+        set | grep -E '^undo_env_.* ()$' | sed 's/undo_env_\(.[^ ]\+\) .*$/\1/'
+    else
+        undo_env_$1
+    fi
+}
+
+function lenv.util.default_env_id() {
+    basename "$1" | rev | cut -d- -f1,2 | rev
+}
+
+function lenv.cmd.setup.simple() {
+    local path="$1" home="$2" cpath
+    new=$(lenv.util.default_env_id "$path")
+    if [ -x /usr/bin/cygpath ]; then
+        cpath=$(cygpath -d "$path")
+    fi
+    lenv.undo.cmd.var $home "${cpath:-$path}"
+    lenv.undo.path_prepend PATH "$path/bin"
+    lenv.core.env_version_display "$new"
+}
+
+function lenv.core.env_version_display() {
+    local display="" classify=$(sed 's/[^0-9._]*//' <<<"$1")
+
+    # version given?
+    [ "$version" != "default" ] && \
+        display="$version:"
+
+    # meaningful spec?
+    [ "$version" != "$spec" -a -n "$spec" ] && \
+        display="$display$spec "
+
+    # meaningful classify?
+    [ "$spec" != "$classify" ] && \
+        display="$display[$classify]"
+
+    printf "Loaded %-${max_width}s (%s)\n" "$base" "$display"
+}
+
+function lenv.core.env_update_defaults() {
+    local defaults="$env_home/env-defaults.lst"
+    local base="$1" spec="$2"
+    [ -f "$defaults" ] || touch "$defaults"
+    (grep -v "^$base|" "$defaults"; echo "$base|spec=\"$spec\"") > "$defaults.new"
+    [ -s "$defaults.new" ] && mv "$defaults.new" "$defaults" || rm "$defaults.new"
+}
+
+function lenv.core.env_read_defaults() {
+    local defaults="$env_home/env-defaults.lst"
+    local base="$1" junk
+    [ -f "$defaults" ] || touch "$defaults"
+    IFS='|' read junk spec < <(grep "^$base|" "$defaults")
+    eval "$spec"
+}
+
+function lenv.cmd.setup.rooted() {
+    local root="$1" prefix="$2" spec="$3" home="$4" path
+
+    if [ "$spec" = "show" ]; then
+        lenv.core.display_avail_versions "$root" "$prefix" "$base"
+    else
+        path=$(ls -dr --sort=version "$root/$prefix$spec"* | head -1)
+        [ -z "$path" ] && {
+            echo "ERROR: unable to locate anything for '$root/$prefix$spec'*"
+            return 1
+        }
+        lenv.cmd.setup.simple "$path" $home
+    fi
+}
+
+function lenv.core.display_avail_versions() {
+    local root="$1" prefix="$2" base="$3"
+    (
+        lenv.core.env_read_defaults "$base"
+        [ -n "$spec" ] && echo "Default set to $spec"
+        cd "$root" && ls -d --sort=version "$prefix"* | cut -c$((1+${#prefix}))-
+    )
+}
+
+# deliberately leaking variables base, version and spec
+# to be used in env config scripts
+function lenv.core.parse_env_spec() {
+    local junk
+
+    IFS=':' read base version junk <<<"${1}:default"
+    case "${version:=default}" in
+        undo)
+            lenv.cmd.undo $base
+        ;;
+        default=*)
+            IFS='=' read version spec <<< "$version"
+            lenv.core.env_update_defaults "$base" "$spec"
+        ;;
+        *)
+            spec=$version
+            [ "$version" = "default" ] && \
+                lenv.core.env_read_defaults "$base"
+            return 0
+        ;;
+    esac
+    return 64
+}
+
+function lenv.core.resolve_env_configs() {
+    local base="$1" spec="$2"
+    (
+        cd $env_home && \
+            ls -dr --sort=version "$base-$spec"* "$base" 2> /dev/null
+    )
+}
+
+#
+# lenv.cmd.load [--env 'title'] [name ...]
+#   where: name =  module[:default[=specifier]]
+#                  module:specifier
+#                  module:show
+#
+#   Typical env module samples
+#     You can use variables called base, version, and spec for
+#     extending with functions for customized behaviors.
+#     (e.g. lenv.cmd.setup.rooted and simple_setup)
+#
+#     $HOME/.env.d/jdk:
+#       rooted_setup "$HOME/java/jdk" jdk "$spec" JAVA_HOME
+#
+#     $HOME/.env.d/mvn:
+#       var MAVEN_OPTS "-XX:MaxPermSize=512m -Xmx256M"
+#       rooted_setup "$HOME/java/tools" apache-maven- "$spec" MAVEN_HOME
+#
+# Versioning:
+#   You can request a module by a specifier using a simple naming convention
+#
+#   example:
+#     COMMAND          Scanning env module filename pattern (reverse sorted)
+#     lenv jdk      -> jdk-*/jdk (same as jdk:default)
+#     lenv jdk:1.6  -> jdk-1.6* / jdk
+#     lenv jdk:1.7  -> jdk-1.7* / jdk
+#
+#   Setting the default version specifier
+#     lenv jdk:default=1.6
+#
+#     When using the lenv.cmd.setup.rooted facility, the greatest version in
+#     the installation root directory be used but the default specifier
+#     above will limit to a subset of versions.
+#
+#   Showing available versions (when using rooted_setup)
+#     lenv jdk:show    (Sample output)
+#       Default set to 1.6
+#       1.6.0_27
+#       1.7.0_51
+#
+# By using the ENV variable in your prompt, you can get effects
+# like having your window title change to hold the latest loaded env
+#
+#  e.g.  PS1="\[\e]0;$ENV \w\a\][\u@\h \W]$ "  (xterm/cygwin title changer)
+#
+function lenv.cmd.load() {
+    local env_home=$HOME/.env.d
+    local pref new="$ENV"
+    local version spec
+    local max_width=$(a=0; for i in "$@"; do [ ${#i} -gt 0 ] && a=${#i}; done; echo $a)
+
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --env)
+                pref=$2; shift 2;;
+            *)  lenv.core.parse_env_spec $1 ||  # base, version & spec from here
+                    return 0
+                for e in $(lenv.core.resolve_env_configs $base $spec); do
+                    local env_cfg="$env_home/$e"
+                    if [ -f "$env_cfg" ]; then
+                        lenv.util.perform_load "$env_cfg"
+                        break
+                    fi
+                done
+                shift;;
+        esac
+    done
+    ENV="${pref:-${new:-$ENV}}"
+}
+
+function lenv.util.perform_load() {
+    local cfg="$1"
+    local aliasconfig=$(shopt -p expand_aliases)
+    alias rooted_setup=lenv.cmd.setup.rooted
+    alias var=lenv.undo.cmd.var
+
+    shopt -s expand_aliases
+
+    lenv.cmd.undo $base 2> /dev/null;
+    source "$cfg"
+    lenv.undo.env_complete $base
+
+    $aliasconfig
+    unalias rooted_setup var
+}
+
+alias lenv=lenv.cmd.load
+
+# end env loading routines
+
+# simple runner to debug with  bash -x lenv-lib.sh <arg>
+[ -n "$1" ] && lenv.cmd.load "$@"

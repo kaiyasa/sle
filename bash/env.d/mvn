@@ -1,0 +1,2 @@
+var MAVEN_OPTS "-XX:MaxPermSize=512m -Xmx256M"
+rooted_setup "/c/java/tools" apache-maven- "$spec" MAVEN_HOME

@@ -1,0 +1,1 @@
+rooted_setup "/c/java/tools" gradle- "$spec" GRADLE_HOME

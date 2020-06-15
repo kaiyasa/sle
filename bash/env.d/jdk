@@ -1,0 +1,2 @@
+rooted_setup "/c/Program Files/Java" jdk "$spec" JAVA_HOME
+

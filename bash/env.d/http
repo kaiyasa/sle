@@ -1,0 +1,3 @@
+var http_proxy  'http://USERNAME:PASSWORD@proxy.dish.com:8080'
+var https_proxy "$http_proxy"
+var ftp_proxy   "$http_proxy"

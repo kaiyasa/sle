@@ -1,0 +1,41 @@
+
+[ $HOME/.bash_aliases ] && source $HOME/.bash_aliases
+
+# easy window titling
+ENV=bare
+PS1="\[\e]0;\$ENV \w\a\][\u@\h \W]$ "
+
+# handle ssh-agent for cygwin
+export SSH_AUTH_SOCK=/tmp/.ssh-agent-socket
+
+ssh-add -l >/dev/null 2>&1
+if [ $? = 2 ]; then
+    # Exit status 2 means couldn't connect to ssh-agent; start one now
+    rm -rf /tmp/.ssh-*
+    ssh-agent -a $SSH_AUTH_SOCK > /tmp/.ssh-agent-script
+    source /tmp/.ssh-agent-script
+    echo $SSH_AGENT_PID > /tmp/.ssh-agent-pid
+fi
+
+# Functions
+# #########
+function kill-agent {
+    kill $(cat /tmp/.ssh-agent-pid)
+}
+
+[ -f $HOME/.profile.d/lenv-lib.sh ] && \
+    source $HOME/.profile.d/lenv-lib.sh
+
+# autoload env hook for Windows shortcuts to use
+if [ -n "$BASH_ENV" ]; then
+    if [ -f "$BASH_ENV" ]; then
+        . "$BASH_ENV"
+        unset BASH_ENV
+    fi
+fi
+
+# Some example functions
+# function settitle() { echo -ne "\e]2;$@\a\e]1;$@\a"; }
+
+# never allow cygwin to got 'dumb' on the terminal
+[ "$TERM" = "dumb" ] && export TERM=xterm
